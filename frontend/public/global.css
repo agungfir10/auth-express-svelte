@@ -1,0 +1,11 @@
+nav {
+  display: inline;
+  margin-left: 20px;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  width: fit-content;
+  gap: 8px;
+}
