@@ -1,7 +1,6 @@
 <script>
-  import { onMount } from 'svelte';
   import axios from 'axios';
-  import { push } from 'svelte-spa-router';
+  import { onMount } from 'svelte';
   import { authenticated } from '../store/auth';
 
   let message = 'You are not logged in';

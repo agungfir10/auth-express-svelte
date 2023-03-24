@@ -1,10 +1,12 @@
 import bcrypjs from 'bcryptjs';
 import { Request, Response } from 'express';
+import { OAuth2Client } from 'google-auth-library';
 import { sign, verify } from 'jsonwebtoken';
 import { MoreThanOrEqual } from 'typeorm';
 import { AppDataSource } from '../data-source';
 import { Token } from '../entity/Token';
 import { User } from '../entity/User';
+const speakeasy = require('speakeasy');
 
 const REFRESH_TOKEN = process.env.REFRESH_TOKEN || '';
 const ACCESS_SECRET = process.env.ACCESS_SECRET || '';
@@ -48,7 +50,6 @@ export const Login = async (req: Request, res: Response) => {
         email,
       },
     });
-    const { id } = user;
 
     if (!user) {
       return res.status(400).send({
@@ -56,10 +57,85 @@ export const Login = async (req: Request, res: Response) => {
       });
     }
 
-    if (!(await bcrypjs.compare(password, user.password))) {
+    const { id, password: passwordHash, tfa_secret } = user;
+
+    if (!(await bcrypjs.compare(password, passwordHash))) {
       return res.status(400).send({
         message: 'Invalid credentials',
       });
+    }
+
+    if (tfa_secret) {
+      const token = speakeasy.totp({
+        secret: user.tfa_secret,
+        encoding: 'ascii',
+      });
+      return res.send({
+        id,
+      });
+    }
+
+    const { ascii, otpauth_url } = speakeasy.generateSecret({ length: 20 });
+
+    const token = speakeasy.totp({
+      secret: ascii,
+      encoding: 'ascii',
+    });
+
+    // send token to Phone, Whatsapp, Telegram, Email or Anything
+
+    res.send({
+      id,
+      secret: ascii,
+      otpauth_url,
+    });
+  } catch (error: any) {
+    res.send({
+      message: error.message,
+    });
+  }
+};
+
+export const TwoFactor = async (req: Request, res: Response) => {
+  try {
+    const { id, code } = req.body;
+
+    const repository = AppDataSource.getRepository(User);
+    const user = await repository.findOne({
+      where: {
+        id,
+      },
+    });
+
+    if (!user) {
+      return res.status(400).send({
+        message: 'Invalid credentials',
+      });
+    }
+
+    const secret = user.tfa_secret !== '' ? user.tfa_secret : req.body.secret;
+
+    const verified = speakeasy.totp.verify({
+      secret: secret,
+      encoding: 'ascii',
+      token: code,
+    });
+
+    if (!verified) {
+      return res.status(400).send({
+        message: 'Invalid credentials',
+      });
+    }
+
+    if (user.tfa_secret === '') {
+      await repository.update(
+        {
+          id,
+        },
+        {
+          tfa_secret: secret,
+        }
+      );
     }
 
     const refreshToken = sign({ id }, REFRESH_TOKEN, { expiresIn: '1w' });
@@ -69,23 +145,23 @@ export const Login = async (req: Request, res: Response) => {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
     });
 
+    const token = sign({ id }, ACCESS_SECRET, { expiresIn: '30s' });
+
     const expired_at = new Date();
     expired_at.setDate(expired_at.getDate() + 7);
-
     await AppDataSource.getRepository(Token).save({
-      user_id: id,
-      token: refreshToken,
+      user_id: user.id,
+      token,
       expired_at,
     });
 
-    const token = sign({ id }, ACCESS_SECRET, { expiresIn: '30s' });
-
     res.send({
+      message: 'success',
       token,
     });
-  } catch (error: any) {
-    res.send({
-      message: error.message,
+  } catch (e) {
+    return res.status(401).send({
+      message: 'unauthenticated',
     });
   }
 };
